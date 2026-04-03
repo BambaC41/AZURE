@@ -1,0 +1,51 @@
+name: Build and Deploy to AKS
+
+on:
+  push:
+
+env:
+  ACR_NAME: schoolregistrybamoy
+  ACR_LOGIN_SERVER: schoolregistrybamoy.azurecr.io
+  AKS_RESOURCE_GROUP: school-rg
+  AKS_CLUSTER_NAME: school-aks
+  NAMESPACE: school
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR
+        run: az acr login --name $ACR_NAME
+
+      - name: Build and push API image
+        run: |
+          docker build -t $ACR_LOGIN_SERVER/school-api:${{ github.sha }} ./school-api
+          docker push $ACR_LOGIN_SERVER/school-api:${{ github.sha }}
+
+      - name: Build and push Front image
+        run: |
+          docker build -t $ACR_LOGIN_SERVER/school-front:${{ github.sha }} ./school-backendfronted
+          docker push $ACR_LOGIN_SERVER/school-front:${{ github.sha }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group $AKS_RESOURCE_GROUP --name $AKS_CLUSTER_NAME --overwrite-existing
+
+      - name: Update API deployment image
+        run: kubectl set image deployment/school-api school-api=$ACR_LOGIN_SERVER/school-api:${{ github.sha }} -n $NAMESPACE
+
+      - name: Update Front deployment image
+        run: kubectl set image deployment/school-front school-front=$ACR_LOGIN_SERVER/school-front:${{ github.sha }} -n $NAMESPACE
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/school-api -n $NAMESPACE
+          kubectl rollout status deployment/school-front -n $NAMESPACE

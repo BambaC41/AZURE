@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: school-front
+  namespace: school
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: school-front
+  template:
+    metadata:
+      labels:
+        app: school-front
+    spec:
+      containers:
+        - name: school-front
+          image: schoolregistrybamoy.azurecr.io/school-front:v1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          env:
+            - name: API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: school-config
+                  key: API_BASE_URL

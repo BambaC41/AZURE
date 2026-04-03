@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: school-config
+  namespace: school
+data:
+  DB_HOST: "school-rg.postgres.database.azure.com"
+  DB_PORT: "5432"
+  DB_NAME: "school"
+  DB_SSLMODE: "require"
+  API_BASE_URL: "http://school-api-service:3000"

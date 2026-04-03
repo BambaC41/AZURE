@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 )
 
 type Ecole struct {
@@ -74,36 +75,41 @@ type Note struct {
 var db *sql.DB
 
 func main() {
-	host := getEnv("DB_HOST", "localhost")
-	port := getEnv("DB_PORT", "3306")
-	user := getEnv("DB_USER", "root")
-	password := getEnv("DB_PASSWORD", "root")
+	host := getEnv("DB_HOST", "")
+	port := getEnv("DB_PORT", "5432")
+	user := getEnv("DB_USER", "")
+	password := getEnv("DB_PASSWORD", "")
 	dbname := getEnv("DB_NAME", "school")
+	sslmode := getEnv("DB_SSLMODE", "require")
+
+	if host == "" || user == "" || password == "" {
+		log.Fatal("missing required database environment variables")
+	}
+
 	log.Println("DB_HOST =", host)
 	log.Println("DB_PORT =", port)
 	log.Println("DB_USER =", user)
 	log.Println("DB_NAME =", dbname)
-
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
-		user, password, host, port, dbname,
-	)
-
+	log.Println("DB_SSLMODE =", sslmode)
 	var err error
-
-	for i := 0; i < 20; i++ {
-		db, err = sql.Open("mysql", dsn)
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=5",
+		host, port, user, password, dbname, sslmode,
+	)
+	for i := 0; i < 1; i++ {
+		db, err = sql.Open("postgres", dsn)
 		if err == nil {
 			err = db.Ping()
 			if err == nil {
 				break
 			}
 		}
-		log.Println("Waiting for MySQL...", err)
+		log.Println("Waiting for PostgreSQL...", err)
 		time.Sleep(3 * time.Second)
 	}
 
 	if err != nil {
-		log.Fatal("Database connectiozn failed:", err)
+		log.Fatal("Database connection failed:", err)
 	}
 	defer db.Close()
 
@@ -131,6 +137,10 @@ func getEnv(key, fallback string) string {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
+	if err := db.Ping(); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -162,15 +172,17 @@ func ecolesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		res, err := db.Exec(`INSERT INTO ecoles (nom, adresse, ville, telephone, email, directeur) VALUES (?, ?, ?, ?, ?, ?)`,
-			e.Nom, e.Adresse, e.Ville, e.Telephone, e.Email, e.Directeur)
+		err := db.QueryRow(
+			`INSERT INTO ecoles (nom, adresse, ville, telephone, email, directeur)
+			 VALUES ($1, $2, $3, $4, $5, $6)
+			 RETURNING id`,
+			e.Nom, e.Adresse, e.Ville, e.Telephone, e.Email, e.Directeur,
+		).Scan(&e.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		id, _ := res.LastInsertId()
-		e.ID = int(id)
 		writeJSON(w, http.StatusCreated, e)
 
 	default:
@@ -206,16 +218,17 @@ func classesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		res, err := db.Exec(`INSERT INTO classes (nom, niveau, filiere, annee_scolaire, salle, professeur_principal, ecole_id, nombre_eleves, moyenne_classe, note_min, note_max)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)`,
-			c.Nom, c.Niveau, c.Filiere, c.AnneeScolaire, c.Salle, c.ProfesseurPrincipal, c.EcoleID)
+		err := db.QueryRow(
+			`INSERT INTO classes (nom, niveau, filiere, annee_scolaire, salle, professeur_principal, ecole_id, nombre_eleves, moyenne_classe, note_min, note_max)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0, 0)
+			 RETURNING id`,
+			c.Nom, c.Niveau, c.Filiere, c.AnneeScolaire, c.Salle, c.ProfesseurPrincipal, c.EcoleID,
+		).Scan(&c.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		id, _ := res.LastInsertId()
-		c.ID = int(id)
 		writeJSON(w, http.StatusCreated, c)
 
 	default:
@@ -251,15 +264,17 @@ func matieresHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		res, err := db.Exec(`INSERT INTO matieres (nom, coefficient, enseignant) VALUES (?, ?, ?)`,
-			m.Nom, m.Coefficient, m.Enseignant)
+		err := db.QueryRow(
+			`INSERT INTO matieres (nom, coefficient, enseignant)
+			 VALUES ($1, $2, $3)
+			 RETURNING id`,
+			m.Nom, m.Coefficient, m.Enseignant,
+		).Scan(&m.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		id, _ := res.LastInsertId()
-		m.ID = int(id)
 		writeJSON(w, http.StatusCreated, m)
 
 	default:
@@ -295,16 +310,17 @@ func etudiantsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		res, err := db.Exec(`INSERT INTO etudiants (nom, prenom, matricule, email, telephone, date_naissance, genre, classe_id, moyenne_generale, rang, mention, statut)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '', '')`,
-			e.Nom, e.Prenom, e.Matricule, e.Email, e.Telephone, e.DateNaissance, e.Genre, e.ClasseID)
+		err := db.QueryRow(
+			`INSERT INTO etudiants (nom, prenom, matricule, email, telephone, date_naissance, genre, classe_id, moyenne_generale, rang, mention, statut)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, '', '')
+			 RETURNING id`,
+			e.Nom, e.Prenom, e.Matricule, e.Email, e.Telephone, e.DateNaissance, e.Genre, e.ClasseID,
+		).Scan(&e.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		id, _ := res.LastInsertId()
-		e.ID = int(id)
 		updateClasseStats(e.ClasseID)
 		updateRanksForClass(e.ClasseID)
 
@@ -325,8 +341,11 @@ func etudiantByIDHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		var e Etudiant
-		err := db.QueryRow(`SELECT id, nom, prenom, matricule, email, telephone, date_naissance, genre, classe_id, moyenne_generale, rang, mention, statut FROM etudiants WHERE id = ?`, id).
-			Scan(&e.ID, &e.Nom, &e.Prenom, &e.Matricule, &e.Email, &e.Telephone, &e.DateNaissance, &e.Genre, &e.ClasseID, &e.MoyenneGenerale, &e.Rang, &e.Mention, &e.Statut)
+		err := db.QueryRow(
+			`SELECT id, nom, prenom, matricule, email, telephone, date_naissance, genre, classe_id, moyenne_generale, rang, mention, statut
+			 FROM etudiants
+			 WHERE id = $1`, id,
+		).Scan(&e.ID, &e.Nom, &e.Prenom, &e.Matricule, &e.Email, &e.Telephone, &e.DateNaissance, &e.Genre, &e.ClasseID, &e.MoyenneGenerale, &e.Rang, &e.Mention, &e.Statut)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "etudiant not found")
 			return
@@ -335,7 +354,7 @@ func etudiantByIDHandler(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPut:
 		var oldClasseID int
-		if err := db.QueryRow(`SELECT classe_id FROM etudiants WHERE id = ?`, id).Scan(&oldClasseID); err != nil {
+		if err := db.QueryRow(`SELECT classe_id FROM etudiants WHERE id = $1`, id).Scan(&oldClasseID); err != nil {
 			writeError(w, http.StatusNotFound, "etudiant not found")
 			return
 		}
@@ -346,10 +365,12 @@ func etudiantByIDHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		_, err := db.Exec(`UPDATE etudiants
-			SET nom = ?, prenom = ?, matricule = ?, email = ?, telephone = ?, date_naissance = ?, genre = ?, classe_id = ?
-			WHERE id = ?`,
-			e.Nom, e.Prenom, e.Matricule, e.Email, e.Telephone, e.DateNaissance, e.Genre, e.ClasseID, id)
+		_, err := db.Exec(
+			`UPDATE etudiants
+			 SET nom = $1, prenom = $2, matricule = $3, email = $4, telephone = $5, date_naissance = $6, genre = $7, classe_id = $8
+			 WHERE id = $9`,
+			e.Nom, e.Prenom, e.Matricule, e.Email, e.Telephone, e.DateNaissance, e.Genre, e.ClasseID, id,
+		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -366,13 +387,13 @@ func etudiantByIDHandler(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		var classeID int
-		if err := db.QueryRow(`SELECT classe_id FROM etudiants WHERE id = ?`, id).Scan(&classeID); err != nil {
+		if err := db.QueryRow(`SELECT classe_id FROM etudiants WHERE id = $1`, id).Scan(&classeID); err != nil {
 			writeError(w, http.StatusNotFound, "etudiant not found")
 			return
 		}
 
-		_, _ = db.Exec(`DELETE FROM notes WHERE etudiant_id = ?`, id)
-		if _, err := db.Exec(`DELETE FROM etudiants WHERE id = ?`, id); err != nil {
+		_, _ = db.Exec(`DELETE FROM notes WHERE etudiant_id = $1`, id)
+		if _, err := db.Exec(`DELETE FROM etudiants WHERE id = $1`, id); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -414,15 +435,17 @@ func notesHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		res, err := db.Exec(`INSERT INTO notes (valeur, type_note, date_note, etudiant_id, matiere_id) VALUES (?, ?, ?, ?, ?)`,
-			n.Valeur, n.TypeNote, n.DateNote, n.EtudiantID, n.MatiereID)
+		err := db.QueryRow(
+			`INSERT INTO notes (valeur, type_note, date_note, etudiant_id, matiere_id)
+			 VALUES ($1, $2, $3, $4, $5)
+			 RETURNING id`,
+			n.Valeur, n.TypeNote, n.DateNote, n.EtudiantID, n.MatiereID,
+		).Scan(&n.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		id, _ := res.LastInsertId()
-		n.ID = int(id)
 		recalculateStudentAndClass(n.EtudiantID)
 
 		writeJSON(w, http.StatusCreated, n)
@@ -442,8 +465,11 @@ func noteByIDHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		var n Note
-		err := db.QueryRow(`SELECT id, valeur, type_note, date_note, etudiant_id, matiere_id FROM notes WHERE id = ?`, id).
-			Scan(&n.ID, &n.Valeur, &n.TypeNote, &n.DateNote, &n.EtudiantID, &n.MatiereID)
+		err := db.QueryRow(
+			`SELECT id, valeur, type_note, date_note, etudiant_id, matiere_id
+			 FROM notes
+			 WHERE id = $1`, id,
+		).Scan(&n.ID, &n.Valeur, &n.TypeNote, &n.DateNote, &n.EtudiantID, &n.MatiereID)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "note not found")
 			return
@@ -452,7 +478,7 @@ func noteByIDHandler(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPut:
 		var oldStudentID int
-		if err := db.QueryRow(`SELECT etudiant_id FROM notes WHERE id = ?`, id).Scan(&oldStudentID); err != nil {
+		if err := db.QueryRow(`SELECT etudiant_id FROM notes WHERE id = $1`, id).Scan(&oldStudentID); err != nil {
 			writeError(w, http.StatusNotFound, "note not found")
 			return
 		}
@@ -463,10 +489,12 @@ func noteByIDHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		_, err := db.Exec(`UPDATE notes
-			SET valeur = ?, type_note = ?, date_note = ?, etudiant_id = ?, matiere_id = ?
-			WHERE id = ?`,
-			n.Valeur, n.TypeNote, n.DateNote, n.EtudiantID, n.MatiereID, id)
+		_, err := db.Exec(
+			`UPDATE notes
+			 SET valeur = $1, type_note = $2, date_note = $3, etudiant_id = $4, matiere_id = $5
+			 WHERE id = $6`,
+			n.Valeur, n.TypeNote, n.DateNote, n.EtudiantID, n.MatiereID, id,
+		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -481,12 +509,12 @@ func noteByIDHandler(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		var studentID int
-		if err := db.QueryRow(`SELECT etudiant_id FROM notes WHERE id = ?`, id).Scan(&studentID); err != nil {
+		if err := db.QueryRow(`SELECT etudiant_id FROM notes WHERE id = $1`, id).Scan(&studentID); err != nil {
 			writeError(w, http.StatusNotFound, "note not found")
 			return
 		}
 
-		if _, err := db.Exec(`DELETE FROM notes WHERE id = ?`, id); err != nil {
+		if _, err := db.Exec(`DELETE FROM notes WHERE id = $1`, id); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -503,7 +531,7 @@ func recalculateStudentAndClass(studentID int) {
 	updateStudentStats(studentID)
 
 	var classeID int
-	if err := db.QueryRow(`SELECT classe_id FROM etudiants WHERE id = ?`, studentID).Scan(&classeID); err == nil {
+	if err := db.QueryRow(`SELECT classe_id FROM etudiants WHERE id = $1`, studentID).Scan(&classeID); err == nil {
 		updateClasseStats(classeID)
 		updateRanksForClass(classeID)
 	}
@@ -550,7 +578,7 @@ func recalculateAllStats() {
 
 func updateStudentStats(studentID int) {
 	var avg sql.NullFloat64
-	err := db.QueryRow(`SELECT AVG(valeur) FROM notes WHERE etudiant_id = ?`, studentID).Scan(&avg)
+	err := db.QueryRow(`SELECT AVG(valeur) FROM notes WHERE etudiant_id = $1`, studentID).Scan(&avg)
 	if err != nil {
 		return
 	}
@@ -563,7 +591,7 @@ func updateStudentStats(studentID int) {
 	mention := getMention(moyenne)
 	statut := getStatut(moyenne)
 
-	_, _ = db.Exec(`UPDATE etudiants SET moyenne_generale = ?, mention = ?, statut = ? WHERE id = ?`,
+	_, _ = db.Exec(`UPDATE etudiants SET moyenne_generale = $1, mention = $2, statut = $3 WHERE id = $4`,
 		moyenne, mention, statut, studentID)
 }
 
@@ -571,8 +599,12 @@ func updateClasseStats(classeID int) {
 	var count int
 	var avg, min, max sql.NullFloat64
 
-	err := db.QueryRow(`SELECT COUNT(*), AVG(moyenne_generale), MIN(moyenne_generale), MAX(moyenne_generale) FROM etudiants WHERE classe_id = ?`, classeID).
-		Scan(&count, &avg, &min, &max)
+	err := db.QueryRow(
+		`SELECT COUNT(*), AVG(moyenne_generale), MIN(moyenne_generale), MAX(moyenne_generale)
+		 FROM etudiants
+		 WHERE classe_id = $1`,
+		classeID,
+	).Scan(&count, &avg, &min, &max)
 	if err != nil {
 		return
 	}
@@ -591,12 +623,16 @@ func updateClasseStats(classeID int) {
 		noteMax = max.Float64
 	}
 
-	_, _ = db.Exec(`UPDATE classes SET nombre_eleves = ?, moyenne_classe = ?, note_min = ?, note_max = ? WHERE id = ?`,
-		count, moyenne, noteMin, noteMax, classeID)
+	_, _ = db.Exec(
+		`UPDATE classes
+		 SET nombre_eleves = $1, moyenne_classe = $2, note_min = $3, note_max = $4
+		 WHERE id = $5`,
+		count, moyenne, noteMin, noteMax, classeID,
+	)
 }
 
 func updateRanksForClass(classeID int) {
-	rows, err := db.Query(`SELECT id FROM etudiants WHERE classe_id = ? ORDER BY moyenne_generale DESC, nom ASC, prenom ASC`, classeID)
+	rows, err := db.Query(`SELECT id FROM etudiants WHERE classe_id = $1 ORDER BY moyenne_generale DESC, nom ASC, prenom ASC`, classeID)
 	if err != nil {
 		return
 	}
@@ -606,14 +642,14 @@ func updateRanksForClass(classeID int) {
 	for rows.Next() {
 		var studentID int
 		if rows.Scan(&studentID) == nil {
-			_, _ = db.Exec(`UPDATE etudiants SET rang = ? WHERE id = ?`, rang, studentID)
+			_, _ = db.Exec(`UPDATE etudiants SET rang = $1 WHERE id = $2`, rang, studentID)
 			rang++
 		}
 	}
 }
 
 func reloadStudentComputedFields(e *Etudiant) {
-	_ = db.QueryRow(`SELECT moyenne_generale, rang, mention, statut FROM etudiants WHERE id = ?`, e.ID).
+	_ = db.QueryRow(`SELECT moyenne_generale, rang, mention, statut FROM etudiants WHERE id = $1`, e.ID).
 		Scan(&e.MoyenneGenerale, &e.Rang, &e.Mention, &e.Statut)
 }
 

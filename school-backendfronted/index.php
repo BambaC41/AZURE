@@ -644,7 +644,7 @@ $editNote = $selectedEditNote && isset(index_by_id($notes)[$selectedEditNote]) ?
             <div class="card hero-card">
                 <h2>Plateforme de gestion académique</h2>
                 <p>
-                    TEST DU CI CD Supervise les établissements, organise les classes, suit les étudiants, gère les matières et pilote les notes depuis une interface unique.
+                    Supervise les établissements, organise les classes, suit les étudiants, gère les matières et pilote les notes depuis une interface unique.
                     Toutes les statistiques visibles ici sont alimentées par l’API : moyenne générale, rang, mention, statut, moyenne de classe et indicateurs globaux.
                 </p>
             </div>
